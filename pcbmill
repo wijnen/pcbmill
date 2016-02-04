@@ -1,0 +1,654 @@
+#!/usr/bin/python3
+# vim: set foldmethod=marker :
+
+import sys
+import os
+import re
+import math
+import fhs
+import clip
+
+config = fhs.init({ # {{{
+	'safe': 1.,
+	'mill': -.05,
+	'drill': -2.,
+	'cut': -1.6,
+	'drillspeed': 10.,
+	'millspeed': .5,
+	'millsize': 1.,
+	'epsilon': .001,
+	'drill_only': True,
+	'order': 'd/B/fc',
+	'output': 'out-',
+	'frontfile': '',
+	'backfile': '',
+	'drillfile': '',
+	'cutfile': '',
+	'alignfile': '',
+	'base': '',
+	'fn': 100,
+	'offset': .1,
+	})
+
+# Useful orders:
+# [front] [drill] [cut]			Single sided
+# back [drill] [cut]			Single sided mirrored
+# back align / front [drill] [cut]	Double sided unplated
+# drill / [back /] [front] [cut]	Electroplated
+# }}}
+
+# Helper functions. {{{
+def debug(s): # {{{
+	sys.stderr.write('%s\n' % s)
+# }}}
+
+def read_datablock(data, pos): # {{{
+	p = data.find('*', pos)
+	return p + 1, data[pos:p]
+# }}}
+
+def flip(p): # {{{
+	if len(p[1]) == 2:
+		return p[0]
+	AIJ = [p[t] + p[t + 2] for t in range(2)]
+	return (p[0][0], p[0][1], AIJ[0] - p[0][0], AIJ[1] - p[0][1])
+# }}}
+
+def gerber(data): # {{{
+	'''Read a gerber file. Return stamps, cuts
+	Outputs are:
+	stamps: all stamed shapes.  Dict with aperture keys, sets of coordinates as values.
+		Apertures are tuples of (type, detail):
+			type='C': circle, detail=(r,)
+			type='O': oval, detail=(rx,ry)
+			type='R': rect, detail=(w,h)
+	cuts: paths.  Dict with radius keys, values are lists of tuples.
+		2 values: lineTo.
+		5 values: arcTo; 0,1=target, 2,3=center, 4=cw(3)/ccw(2).
+	'''
+	# Set up graphics state.
+	L = None
+	A = None
+	XI = None
+	XD = None
+	YI = None
+	YD = None
+	unit = None
+	aperture = None
+	multiquadrant = None
+	interpolation = None
+	current = [0., 0.]
+	step = 1
+	repeat = 1
+	polarity = True
+	region = False
+	regions = []
+	# Apertures.
+	apertures = {}
+	# Remove CR and LF.
+	data = data.replace('\r', '').replace('\n', '')
+	# Read all commands.
+	pos = 0
+	output = {}
+	stamps = {}
+	while pos < len(data):
+		if data[pos] == '%':
+			pos += 1
+			cmd = []
+			while data[pos] != '%':
+				pos, block = read_datablock(data, pos)
+				cmd.append(block)
+			pos += 1
+		else:
+			pos, block = read_datablock(data, pos)
+			cmd = [block]
+		# Handle the command.
+		# Ingore obsolete prefixes.
+		while cmd[0].startswith('G54') or cmd[0].startswith('G55'):
+			cmd[0] = cmd[0][3:]
+		if cmd[0].startswith('G'):
+			if cmd[0].startswith('G4') or cmd[0].startswith('G04'):
+				# Comment; ignore.
+				continue
+			if cmd[0] == 'G74':
+				multiquadrant = False
+				continue
+			if cmd[0] == 'G75':
+				multiquadrant = True
+				continue
+			if cmd[0] in ('G70', 'G71', 'G90', 'G91'):
+				# Ignore these.
+				continue
+			if cmd[0] == 'G36':
+				region = True
+				regions.append([])
+				continue
+			if cmd[0] == 'G37':
+				region = False
+				continue
+			for i in ('1', '2', '3'):
+				if cmd[0].startswith('G' + i):
+					mode = 'G' + i
+					cmd[0] = cmd[0][2:]
+					break
+				elif cmd[0].startswith('G0' + i):
+					mode = 'G' + i
+					cmd[0] = cmd[0][3:]
+					break
+			else:
+				raise AssertionError('G command not understood: %s' % cmd[0])
+		elif cmd[0].startswith('M'):
+			if cmd[0] in ('M0', 'M00', 'M2', 'M02'):
+				assert pos == len(data)
+				continue
+			if cmd[0] in ('M1', 'M01'):
+				continue
+			if cmd[0].startswith('MO'):
+				assert len(cmd) == 1 and len(cmd[0]) == 4 and cmd[0] in ('MOIN', 'MOMM')
+				unit = 1. if cmd[0] == 'MOMM' else 25.4
+				continue
+		elif cmd[0].startswith('FS'):
+			assert L is None and len(cmd) == 1
+			r = re.match('FS[LT][AI]X\d\dY\d\d$', cmd[0])
+			assert r is not None
+			L = cmd[0][2] == 'L'
+			A = cmd[0][3] == 'A'
+			XI = ord(cmd[0][5]) - ord('0')
+			XD = ord(cmd[0][6]) - ord('0')
+			YI = ord(cmd[0][8]) - ord('0')
+			YD = ord(cmd[0][9]) - ord('0')
+			continue
+		elif cmd[0].startswith('AD'):
+			r = re.match('ADD(\d+)([a-zA-Z_.$][a-zA-Z_0-9.$]*),(.*)$', cmd[0])
+			assert r is not None
+			num = int(r.group(1))
+			assert num not in apertures
+			apertures[num] = (r.group(2), tuple(float(x) for x in r.group(3).split('X')))
+			aperture = num
+			continue
+		elif cmd[0].startswith('AM'):
+			raise AssertionError('Aperture Macros are not supported at the moment')
+		elif cmd[0].startswith('SR'):
+			raise AssertionError('Step and Repeat is not supported at the moment')
+		elif cmd[0] == 'LPD':
+			polarity = True
+			continue
+		elif cmd[0] == 'LPC':
+			polarity = False
+			continue
+		elif cmd[0].startswith('TA') or cmd[0].startswith('TD'):
+			# Ignore attrubutes.
+			continue
+		elif cmd[0].startswith('D'):
+			num = int(cmd[0][1:])
+			assert num in apertures
+			aperture = num
+			continue
+		if len(cmd[0]) == 0:
+			continue
+		# Current mode must be G1, G2 or G3.
+		r = re.match('(?:X([+-]?\d+))?(?:Y([+-]?\d+))?(?:I([+-]?\d+))?(?:J([+-]?\d+))?D0?([123])$', cmd[0])
+		if r is None:
+			raise AssertionError('invalid line %s' % cmd[0])
+		c = []
+		for g in ((1, XI, XD), (2, YI, YD), (3, XI, XD), (4, YI, YD)):
+			t = r.group(g[0])
+			if t is None:
+				c.append(None)
+				continue
+			if not L:
+				t += '0' * (len(t) - g[1] - g[2])
+			c.append(int(t))
+		if c[0] is None:
+			c[0] = current[0]
+		if c[1] is None:
+			c[1] = current[1]
+		if c[2] is None:
+			c[2] = 0.
+		if c[3] is None:
+			c[3] = 0.
+		if region:
+			assert polarity == True
+			assert r.group(5) != '3'
+			if r.group(5) == '1':
+				if len(regions[-1]) == 0 or regions[-1][-1] != current:
+					regions[-1].append(current)
+				if mode == 'G1':
+					regions[-1].append((c[0], c[1]))
+				elif mode == 'G2':
+					regions[-1].append((c[0], c[1], c[2], c[3], 2))
+				elif mode == 'G3':
+					regions[-1].append((c[0], c[1], c[2], c[3], 3))
+				else:
+					raise AssertionError('Invalid mode %s' % mode)
+		else:
+			assert aperture is not None and aperture in apertures
+			a = apertures[aperture]
+			if r.group(5) == '3':
+				if a not in stamps:
+					stamps[a] = set()
+				stamps[a].add((c[0], c[1]))
+				continue
+			if r.group(5) == '1':
+				assert polarity == True
+				assert a[0] == 'C' and len(a[1]) == 1
+				d = float(a[1][0]) * unit
+				if d not in output:
+					output[d] = set()
+				if mode == 'G1':
+					output[d].add((current, (c[0], c[1])))
+				elif mode == 'G2':
+					output[d].add((current, (c[0], c[1], c[2], c[3], 2)))
+				elif mode == 'G3':
+					output[d].add((current, (c[0], c[1], c[2], c[3], 3)))
+				else:
+					raise AssertionError('Invalid mode %s' % mode)
+		current = (c[0], c[1])
+	keys = list(output.keys())
+	keys.sort()
+	cuts = {}
+	def md(src):
+		if len(src) == 2:
+			return src[0] / (10 ** XD) * unit, src[1] / (10 ** YD) * unit
+		else:
+			return src[0] / (10 ** XD) * unit, src[1] / (10 ** YD) * unit, src[2] / (10 ** XD) * unit, src[3] / (10 ** YD) * unit, src[4]
+	for a in stamps:
+		stamps[a] = map(md, stamps[a])
+	for region in regions:
+		for i, point in enumerate(region):
+			region[i] = md(point)
+	for k in keys:
+		paths = []
+		while len(output[k]) > 0:
+			paths.append(list(output[k].pop()))
+			# Add segments to path at end.
+			while True:
+				n = [x for x in output[k] if x[0][:2] == paths[-1][-1][:2]]
+				if len(n) == 0:
+					break
+				paths[-1].append(n[0][1])
+				output[k].remove(n[0])
+			# Add segments to path at start.
+			while True:
+				n = [x for x in output[k] if x[1][:2] == paths[-1][0][:2]]
+				if len(n) == 0:
+					break
+				paths[-1][0] = n[0][1]	# Add arc, if any.
+				paths[-1].insert(0, n[0][0])
+				output[k].remove(n[0])
+			# Add inverted segments to path at end.
+			while True:
+				n = [x for x in output[k] if x[1][:2] == paths[-1][-1][:2]]
+				if len(n) == 0:
+					break
+				paths[-1].append(flip(n[0]))
+				output[k].remove(n[0])
+			# Add inverted segments to path at start.
+			while True:
+				n = [x for x in output[k] if x[0][:2] == paths[-1][0][:2]]
+				if len(n) == 0:
+					break
+				paths[-1][0] = flip(n[0])	# Add arc, if any.
+				paths[-1].insert(0, n[0][1][:2])
+				output[k].remove(n[0])
+		if len(paths) == 0:
+			continue
+		cuts[k] = []
+		for p in paths:
+			cuts[k].append(tuple(map(md, p)))
+	return stamps, cuts, regions
+# }}}
+
+def excellon(f): # {{{
+	'''Read excellon drill file.
+	Input:
+		f: excellon file.
+	Output:
+		tools: dict with tool names as keys, diameter as value.
+		milltool: name of milling tool.
+		output: dict with diameters as keys, (drills, slots) as value.
+			drills is a list of (x,y) tuples.
+			slots is a list of (x0, y0, x1, y1) tuples.
+	'''
+	assert f.readline() == 'M48\n'
+	while True:
+		ln = f.readline()
+		if not ln.startswith(';'):
+			break
+	assert ln == 'FMAT,2\n'
+	assert f.readline() == 'METRIC,TZ\n'
+	tools = {}
+	milltool = -1
+	while True:
+		ln = f.readline()
+		if ln == '%\n':
+			break
+		m = re.match('T(\d+)C([0-9.]+)\n', ln)
+		assert m
+		t = int(m.group(1))
+		assert t not in tools
+		tools[t] = float(m.group(2))
+		if abs(tools[t] - config['millsize']) < config['epsilon']:
+			milltool = t
+			config['millsize'] = tools[t]
+	if milltool == -1:
+		tools[milltool] = config['millsize']
+	assert f.readline() == 'G90\n'
+	output = {}
+	tool = None
+	for ln in f:
+		if ln in ('G05\n', 'M71\n'):
+			continue
+		if ln.startswith('T'):
+			tool = float(ln[1:])
+			continue
+		if ln == 'M30\n':
+			break
+		m = re.match('X(-?[0-9.]+)Y(-?[0-9.]+)(?:G85X(-?[0-9.]+)Y(-?[0-9.]+))?\n', ln)
+		assert m is not None
+		assert tool is not None
+		if tools[tool] not in output:
+			output[tools[tool]] = ([], [])
+		if m.group(3) is None:
+			# Hole.
+			output[tools[tool]][0].append((float(m.group(1)), float(m.group(2))))
+		else:
+			# Slot.
+			output[tools[tool]][1].append((float(m.group(1)), float(m.group(2)), float(m.group(3)), float(m.group(4))))
+	return tools, milltool, output
+# }}}
+
+def mill2drill(size, p0, p1, center = None, clockwise = None, mirror = False): # {{{
+	if mirror:
+		p0 = (-p0[0], p0[1])
+		p1 = (-p1[0], p1[1])
+		if center:
+			center = (-center[0], center[1])
+			clockwise = not clockwise
+	ret = [], []
+	if center is None:
+		dist = ((p1[0] - p0[0]) ** 2 + (p1[1] - p0[1]) ** 2) ** .5
+		def pos(phase):
+			return tuple(p0[t] + (p1[t] - p0[t]) * phase for t in range(2))
+		if dist < size:
+			p0 = [(p0[0] + p1[0]) / 2, (p0[1], p1[1]) / 2]
+			p1 = p0
+	else:
+		r0 = sum((p0[t] - center[t]) ** 2 for t in range(2)) ** .5
+		r1 = sum((p1[t] - center[t]) ** 2 for t in range(2)) ** .5
+		if r0 < size / 2 or r1 < size / 2:
+			p0 = center
+			p1 = center
+			dist = 0
+		else: 
+			e0 = tuple(p0[t] - center[t] for t in range(2))
+			e0 = [e / r0 for e in e0]
+			s = -1 if clockwise else 1
+			e1 = (s * -e0[1], s * e0[0])
+			a0 = math.atan2(*e0)
+			a1 = math.atan2(*(p1[t] - center[t] for t in range(2)))
+			angle = s * (a1 - a0)
+			if angle <= 0:
+				angle += 2 * math.pi
+			dist = r0 * angle + (r1 - r0) / 2 * angle ** 2
+			def pos(phase):
+				if (r1 - r0) < config['epsilon']:
+					ap = phase
+				else:
+					ap = ((r1 + r0) * phase / (r1 - r0) + (r0 / (r1 - r0)) ** 2) ** .5 - r0 / (r1 - r0)
+				r = r0 + (r1 - r0) * ap
+				a = ap * angle
+				ret = tuple(center[t] + r * (e0[t] * math.cos(a) + e1[t] * math.sin(a)) for t in range(2))
+				return ret
+	num = int(dist // size)	# Number of segments.
+	if num > 0:
+		unit = 1 / num
+	else:
+		unit = 0
+	for i in range(num + 1):	# Add final point as well.
+		ret[0].append(pos(unit * i))
+	# Add points in between (backwards).
+	for i in range(num):
+		ret[1].append(pos(unit * (num - .5 - i)))
+	return ret
+# }}}
+
+def drill_paths(paths, mirror): # {{{
+	for path in cuts[t]:
+		p = path[0]
+		for c in path[1:]:
+			if len(c) == 2:
+				first, second = mill2drill(t, p, c, mirror = mirror)
+				for d in first:
+					outputs[-1] += 'G81 R%f Z%f F%f X%f Y%f' % (config['safe'], config['drill'], config['drillspeed'] * 60, mirror * d[0], d[1])
+				back = second + back
+			else:
+				first, second = mill2drill(t, p, c[:2], (p[0] + c[2], p[1] + c[3]), c[4] == 2, mirror = mirror)
+				for d in first:
+					outputs[-1] += 'G81 R%f Z%f F%f X%f Y%f' % (config['safe'], config['drill'], config['drillspeed'] * 60, mirror * d[0], d[1])
+				back = second + back
+			p = c[:2]
+	for d in back:
+		outputs[-1] += 'G81 R%f Z%f F%f X%f Y%f' % (config['safe'], config['drill'], config['drillspeed'] * 60, mirror * d[0], d[1])
+	# }}}
+
+def readfile(file, read = True):
+	file2name = {
+		'frontfile': '-F_Cu.gbr',
+		'backfile': '-B_Cu.gbr',
+		'drillfile': '.drl',
+		'cutfile': '-Edge_Cuts.gbr',
+		'alignfile': '-Dwgs_User.gbr',
+	}
+	if config[file] and os.path.exists(config[file]):
+		ret = config[file]
+	elif config['base']:
+		ret = config['base'] + file2name[file]
+	else:
+		raise FileNotFoundError("Requested %s but no file is specified" % file)
+	if not os.path.exists(ret):
+		raise FileNotFoundError("Requested %s doesn't exist: %s" % (file, ret))
+	if read:
+		return open(ret).read()
+	else:
+		return open(ret)
+# }}}
+
+# Actions. {{{
+def make_traces(file, mirror):	# {{{
+	'''Mill front or back traces.'''
+	stamps, traces, regions = gerber(readfile(file))
+	def rect(x0, y0, x1, y1):
+		return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+	def circle(x, y, d):
+		fn = config['fn']
+		return [[x + d / 2 * math.cos(i * 2 * math.pi / fn), y + d / 2 * math.sin(i * 2 * math.pi / fn)] for i in range(fn)]
+	for r in regions:
+		for pos in r:
+			pos = (mirror * pos[0],) + pos[1:]
+	for s in stamps:
+		if s[0] == 'C':
+			for c in stamps[s]:
+				regions.append(circle(mirror * c[0], c[1], s[1][0]))
+		elif s[0] == 'O':
+			if s[1][0] < s[1][1]:
+				for c in stamps[s]:
+					diff = (s[1][1] - s[1][0]) / 2
+					regions.append(circle(mirror * c[0], c[1] - diff, s[1][0]))
+					regions.append(circle(mirror * c[0], c[1] + diff, s[1][0]))
+					regions.append(rect(mirror * c[0] - s[1][0] / 2, c[1] - diff, mirror * c[0] + s[1][0] / 2, c[1] + diff))
+			else:
+				for c in stamps[s]:
+					diff = (s[1][0] - s[1][1]) / 2
+					regions.append(circle(mirror * c[0] - diff, c[1], s[1][0]))
+					regions.append(circle(mirror * c[0] + diff, c[1], s[1][0]))
+					regions.append(rect(mirror * c[0] - diff, c[1] - s[1][1] / 2, mirror * c[0] + diff, c[1] + s[1][1] / 2))
+		elif s[0] == 'R':
+			for c in stamps[s]:
+				regions.append(rect(mirror * c[0] - s[1][0] / 2, c[1] - s[1][1] / 2, mirror * c[0] + s[1][0] / 2, c[1] + s[1][1] / 2))
+	for d in traces:
+		if len(traces[d]) == 0:
+			continue
+		for path in traces[d]:
+			if len(path) == 0:
+				continue
+			p = path[0]
+			regions.append(circle(mirror * p[0], p[1], d))
+			for pos in path[1:]:
+				dist = sum((pos[t] - p[t]) ** 2 for t in range(2)) ** .5
+				if dist == 0:
+					continue
+				offset = [(pos[1] - p[1]) / dist * d / 2, -(pos[0] - p[0]) / dist * d / 2]
+				regions.append((
+					(mirror * (p[0] - offset[0]), p[1] - offset[1]),
+					(mirror * (pos[0] - offset[0]), pos[1] - offset[1]),
+					(mirror * (pos[0] + offset[0]), pos[1] + offset[1]),
+					(mirror * (p[0] + offset[0]), p[1] + offset[1])))
+				p = pos
+				regions.append(circle(p[0], p[1], d))
+	# Merge and offset all regions, and check for resulting intersections.
+	regions = clip.handle(regions, config['offset'])
+	# Create gcode from result.
+	if len(regions) > 0:
+		outputs[-1] += 'M6\nM0 ;MSG, Please insert router bit\nM3\n'
+		for r in regions:
+			p = r[0]
+			outputs[-1] += 'G0 Z%f\n' % config['safe']
+			outputs[-1] += 'G0 X%f Y%f Z%f\n' % (p[0], p[1], config['safe'])
+			outputs[-1] += 'G1 Z%f F%f\n' % (config['mill'], config['millspeed'] * 60)
+			for pos in r[1:]:
+				outputs[-1] += 'G1 X%f Y%f\n' % (pos[0], pos[1])
+				p = pos
+			# Close the path.
+			outputs[-1] += 'G1 X%f Y%f\n' % (r[0][0], r[0][1])
+		outputs[-1] += 'M5\n'
+# }}}
+
+def make_align(file, mirror):	# {{{
+	'''Drill alignment holes.'''
+	stamps, cuts, regions = gerber(readfile(file))
+	assert len(stamps) == 0
+	assert len(regions) == 0
+	outputs[-1] += 'M6\nM0 ;MSG, Please insert alignment drill bit\nM3\n'
+	for path in cuts:
+		for pos in path:
+			outputs[-1] += 'G81 R%f Z%f F%f X%f Y%f\n' % (config['safe'], config['drill'], config['drillspeed'] * 60, mirror * pos[0], pos[1])
+	outputs[-1] += 'M5\n'
+# }}}
+
+def make_drills(file, mirror):	# {{{
+	'''Drill via and pin holes and mill or drill slots.'''
+	global last, cutting
+	tools, milltool, output = excellon(readfile(file, False))
+	st = list(tools.values())
+	st.sort()
+	for t in st:
+		if len(output[t][0]) == 0 and (not config['drill_only'] or len(output[t][1]) == 0):
+			continue
+		# Ignore changes from one tool to almost the same tool.
+		if t < config['millsize'] and (cutting or last is None or abs(t - last) > config['epsilon']):
+			outputs[-1] += 'M6\nM0 ;MSG, Please insert %.2f mm drill bit\nM3\n' % t
+			last = t
+			cutting = False
+		outputs[-1] += 'M3\n'
+		for pos in output[t][0]:
+			if t > config['millsize']:
+				# This is not impossible, but it is unsupported.
+				assert not config['drill_only']
+				outputs[-1] += 'G0 Z%f X%f Y%f\n' % (config['safe'], mirror * pos[0], pos[1])
+				outputs[-1] += 'G1 Z%f F%f\n' % (config['cut'], config['millspeed'] * 60)
+				outputs[-1] += 'G1 X%f\n' % (mirror * pos[0] + (t - config['millsize']) / 2)
+				outputs[-1] += 'G2 I%f\n' % (-mirror * (t - config['millsize']) / 2)
+				outputs[-1] += 'G0 Z%f\n' % config['safe']
+			else:
+				outputs[-1] += 'G81 R%f Z%f F%f X%f Y%f\n' % (config['safe'], config['drill'], config['drillspeed'] * 60, mirror * pos[0], pos[1])
+		if config['drill_only']:
+			slots = []
+			for pos in output[t][1]:
+				slots.append(((pos[0], pos[1]), (pos[2], pos[3])))
+			drill_paths(slots, mirror)
+		outputs[-1] += 'M5\n'
+	for t in st:
+		if config['drill_only'] or len(output[t][1]) == 0:
+			continue
+		# Ignore changes from one tool to almost the same tool.
+		if t >= config['millsize'] and (not cutting or last is None):
+			outputs[-1] += 'M6\nM0 ;MSG, Please insert %.2f mm ** CUTOUT ** bit\n' % config['millsize']
+			last = tools[milltool]
+			cutting = True
+		outputs[-1] += 'M3\n'
+		for pos in output[t][1]:
+			outputs[-1] += 'G0 Z%f X%f Y%f\n' % (config['safe'], mirror * pos[0], pos[1])
+			outputs[-1] += 'G1 Z%f F%f\n' % (config['cut'], config['millspeed'] * 60)
+			outputs[-1] += 'G1 X%f Y%f\n' % (mirror * pos[2], pos[3])
+			outputs[-1] += 'G1 Z%f\n' % config['safe']
+		outputs[-1] += 'M5\n'
+# }}}
+
+def make_cuts(file, mirror):	# {{{
+	'''Mill or drill edge cuts.'''
+	global last, cutting
+	stamps, cuts = gerber(readfile(file))
+	assert len(stamps) == 0
+	assert len(regions) == 0
+	outputs[-1] += '; Outline.'
+	for t in cuts:
+		if config['drill_only']:
+			if last != t or cutting:
+				outputs[-1] += 'M6\nM0 ;MSG, Please insert %.2f mm drill bit' % t
+				last = t
+				cutting = False
+			back = []
+			drill_paths(cuts[t], mirror)
+		else:
+			if last != t or not cutting:
+				outputs[-1] += 'M6\nM0 ;MSG, Please insert %.2f mm *** CUTOUT *** bit' % t
+				last = t
+				cutting = True
+			for path in cuts[t]:
+				outputs[-1] += 'G0 Z%f X%f Y%f' % (config['safe'], mirror * path[0][0], path[0][1])
+				outputs[-1] += 'G1 Z%f F%f' % (config['cut'], config['millspeed'] * 60)
+				for c in path[1:]:
+					if len(c) == 2:
+						outputs[-1] += 'G1 X%f Y%f' % (mirror * c[0], c[1])
+					else:
+						outputs[-1] += 'G%d X%f Y%f I%f J%f' % (((c[4] * 2 - 5) * mirror + 5) / 2, mirror * c[0], c[1], mirror * c[2], c[3])
+				outputs[-1] += 'G1 Z%f' % config['safe']
+# }}}
+# }}}
+
+outputs = ['']
+last = None
+cutting = False
+
+for action in config['order']: # {{{
+	if action == 'f':	# Front traces.
+		make_traces('frontfile', 1)
+	elif action == 'F':	# Mirrored front traces (Don't use).
+		make_traces('frontfile', -1)
+	elif action == 'b':	# Back traces (Don't use).
+		make_traces('backfile', 1)
+	elif action == 'B':	# Mirrored back traces.
+		make_traces('backfile', -1)
+	elif action == 'a':	# Front alignment holes (Don't use).
+		make_align('alignfile', 1)
+	elif action == 'A':	# Back (mirrored) alignment holes.
+		make_align('alignfile', -1)
+	elif action == 'd':	# Front drills.
+		make_drills('drillfile', 1)
+	elif action == 'D':	# Back (mirrored) drills.
+		make_drills('drillfile', -1)
+	elif action == 'c':	# Front cuts.
+		make_cuts('cutfile', 1)
+	elif action == 'C':	# Back (mirrored) cuts.
+		make_cuts('cutfile', -1)
+	elif action == '/':	# Next file.
+		outputs.append('')
+	else:
+		sys.stderr.write('Invalid character "%s" in order string\n', action)
+		sys.exit(1)
+# }}}
+
+for i, o in enumerate(outputs):
+	with open('%s%d' % (config['output'], i) + os.extsep + 'gcode', 'w') as f:
+		f.write(o)

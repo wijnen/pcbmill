@@ -1,0 +1,2 @@
+pcbmill /usr/lib/pcbmill/
+clip/build/lib.*/* /usr/lib/pcbmill/

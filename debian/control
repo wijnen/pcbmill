@@ -1,0 +1,18 @@
+Source: pcbmill
+Section: electronics
+Priority: optional
+Maintainer: Bas Wijnen <wijnen@debian.org>
+Build-Depends: debhelper (>= 9), dh-python, python3-all-dev, libpolyclipping-dev, ruby-ronn
+Standards-Version: 3.9.6
+
+Package: pcbmill
+Architecture: any
+Depends: ${misc:Depends}, ${python3:Depends}, ${shlibs:Depends}, python3
+Description: Convert gerber files from KiCAD into G-Code for milling
+ KiCAD and other pcb design programs produce gerber files.  Those can be
+ handled by pcb manufacturers.  But some people who want to mount a mill to
+ their 3-D printer and use it to produce boards.  They need G-Code instead.
+ .
+ So far, people have been using pcb2gcode for this purpose.  This program
+ generates better paths and is more flexible in what it accepts.  It also
+ produces better output.
