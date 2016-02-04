@@ -74,7 +74,7 @@ static PyObject *clip_handle(PyObject *self, PyObject *args) {
 		clip.AddPath(result[r], ptClip, true);
 		clip.Execute(ctIntersection, intersection, pftNonZero, pftNonZero);
 		if (intersection.size() > 0) {
-			PyErr_SetString(PyExc_ValueError, "Offset causes regions to overlap.");
+			PyErr_SetString(PyExc_ValueError, "Offset causes regions to overlap.  Use a smaller offset or give the design more clearance.");
 			return NULL;
 		}
 		clip.Execute(ctUnion, check, pftNonZero, pftNonZero);

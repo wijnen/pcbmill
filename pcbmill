@@ -413,23 +413,24 @@ def mill2drill(size, p0, p1, center = None, clockwise = None, mirror = False): #
 	return ret
 # }}}
 
-def drill_paths(paths, mirror): # {{{
-	for path in cuts[t]:
+def drill_paths(tool, paths, mirror): # {{{
+	back = []
+	for path in paths:
 		p = path[0]
 		for c in path[1:]:
 			if len(c) == 2:
-				first, second = mill2drill(t, p, c, mirror = mirror)
+				first, second = mill2drill(tool, p, c, mirror = mirror < 0)
 				for d in first:
-					outputs[-1] += 'G81 R%f Z%f F%f X%f Y%f' % (config['safe'], config['drill'], config['drillspeed'] * 60, mirror * d[0], d[1])
+					outputs[-1] += 'G81 R%f Z%f F%f X%f Y%f\n' % (config['safe'], config['drill'], config['drillspeed'] * 60, d[0], d[1])
 				back = second + back
 			else:
-				first, second = mill2drill(t, p, c[:2], (p[0] + c[2], p[1] + c[3]), c[4] == 2, mirror = mirror)
+				first, second = mill2drill(tool, p, c[:2], (p[0] + c[2], p[1] + c[3]), c[4] == 2, mirror = mirror)
 				for d in first:
-					outputs[-1] += 'G81 R%f Z%f F%f X%f Y%f' % (config['safe'], config['drill'], config['drillspeed'] * 60, mirror * d[0], d[1])
+					outputs[-1] += 'G81 R%f Z%f F%f X%f Y%f\n' % (config['safe'], config['drill'], config['drillspeed'] * 60, d[0], d[1])
 				back = second + back
 			p = c[:2]
 	for d in back:
-		outputs[-1] += 'G81 R%f Z%f F%f X%f Y%f' % (config['safe'], config['drill'], config['drillspeed'] * 60, mirror * d[0], d[1])
+		outputs[-1] += 'G81 R%f Z%f F%f X%f Y%f\n' % (config['safe'], config['drill'], config['drillspeed'] * 60, d[0], d[1])
 	# }}}
 
 def readfile(file, read = True):
@@ -530,9 +531,10 @@ def make_align(file, mirror):	# {{{
 	assert len(stamps) == 0
 	assert len(regions) == 0
 	outputs[-1] += 'M6\nM0 ;MSG, Please insert alignment drill bit\nM3\n'
-	for path in cuts:
-		for pos in path:
-			outputs[-1] += 'G81 R%f Z%f F%f X%f Y%f\n' % (config['safe'], config['drill'], config['drillspeed'] * 60, mirror * pos[0], pos[1])
+	for tool in cuts:
+		for path in cuts[tool]:
+			for pos in path:
+				outputs[-1] += 'G81 R%f Z%f F%f X%f Y%f\n' % (config['safe'], config['drill'], config['drillspeed'] * 60, mirror * pos[0], pos[1])
 	outputs[-1] += 'M5\n'
 # }}}
 
@@ -566,7 +568,7 @@ def make_drills(file, mirror):	# {{{
 			slots = []
 			for pos in output[t][1]:
 				slots.append(((pos[0], pos[1]), (pos[2], pos[3])))
-			drill_paths(slots, mirror)
+			drill_paths(t, slots, mirror)
 		outputs[-1] += 'M5\n'
 	for t in st:
 		if config['drill_only'] or len(output[t][1]) == 0:
@@ -588,32 +590,31 @@ def make_drills(file, mirror):	# {{{
 def make_cuts(file, mirror):	# {{{
 	'''Mill or drill edge cuts.'''
 	global last, cutting
-	stamps, cuts = gerber(readfile(file))
+	stamps, cuts, regions = gerber(readfile(file))
 	assert len(stamps) == 0
 	assert len(regions) == 0
-	outputs[-1] += '; Outline.'
+	outputs[-1] += '; Outline.\n'
 	for t in cuts:
 		if config['drill_only']:
 			if last != t or cutting:
-				outputs[-1] += 'M6\nM0 ;MSG, Please insert %.2f mm drill bit' % t
+				outputs[-1] += 'M6\nM0 ;MSG, Please insert %.2f mm drill bit\n' % t
 				last = t
 				cutting = False
-			back = []
-			drill_paths(cuts[t], mirror)
+			drill_paths(t, cuts[t], mirror)
 		else:
 			if last != t or not cutting:
-				outputs[-1] += 'M6\nM0 ;MSG, Please insert %.2f mm *** CUTOUT *** bit' % t
+				outputs[-1] += 'M6\nM0 ;MSG, Please insert %.2f mm *** CUTOUT *** bit\n' % t
 				last = t
 				cutting = True
 			for path in cuts[t]:
-				outputs[-1] += 'G0 Z%f X%f Y%f' % (config['safe'], mirror * path[0][0], path[0][1])
-				outputs[-1] += 'G1 Z%f F%f' % (config['cut'], config['millspeed'] * 60)
+				outputs[-1] += 'G0 Z%f X%f Y%f\n' % (config['safe'], mirror * path[0][0], path[0][1])
+				outputs[-1] += 'G1 Z%f F%f\n' % (config['cut'], config['millspeed'] * 60)
 				for c in path[1:]:
 					if len(c) == 2:
-						outputs[-1] += 'G1 X%f Y%f' % (mirror * c[0], c[1])
+						outputs[-1] += 'G1 X%f Y%f\n' % (mirror * c[0], c[1])
 					else:
-						outputs[-1] += 'G%d X%f Y%f I%f J%f' % (((c[4] * 2 - 5) * mirror + 5) / 2, mirror * c[0], c[1], mirror * c[2], c[3])
-				outputs[-1] += 'G1 Z%f' % config['safe']
+						outputs[-1] += 'G%d X%f Y%f I%f J%f\n' % (5 - c[4] if mirror == -1 else c[4], mirror * c[0], c[1], mirror * c[2], c[3])
+				outputs[-1] += 'G1 Z%f\n' % config['safe']
 # }}}
 # }}}
 
