@@ -37,7 +37,7 @@ static PyObject *clip_handle(PyObject *self, PyObject *args) {
 					PyErr_SetString(PyExc_ValueError, "Point elements must be numbers.");
 					return NULL;
 				}
-				coordinate[c] = static_cast <cInt> (PyFloat_AsDouble(PyNumber_Float(oc)) * (1l << 32));
+				coordinate[c] = static_cast <cInt> (PyFloat_AsDouble(PyNumber_Float(oc)) * (1ll << 32));
 			}
 			path[p].X = coordinate[0];
 			path[p].Y = coordinate[1];
@@ -49,11 +49,11 @@ static PyObject *clip_handle(PyObject *self, PyObject *args) {
 	}
 	// Offset.
 	for (size_t r = 0; r < result.size(); ++r) {
-		ClipperOffset offsetter(2l << 32, 1l << 30);
+		ClipperOffset offsetter(2ll << 32, 1ll << 30);
 		offsetter.AddPath(result[r], jtRound, etClosedPolygon);
 		Paths offset_result;
 		// Multiply offset by 2, because half of it is inside the shape.
-		offsetter.Execute(offset_result, offset * (2l << 32));
+		offsetter.Execute(offset_result, offset * (2ll << 32));
 		Clipper clip;
 		clip.AddPath(result[r], ptSubject, true);
 		clip.AddPaths(offset_result, ptClip, true);
@@ -83,7 +83,7 @@ static PyObject *clip_handle(PyObject *self, PyObject *args) {
 	for (size_t r = 0; r < result.size(); ++r) {
 		PyObject *path = PyTuple_New(result[r].size());
 		for (size_t p = 0; p < result[r].size(); ++p) {
-			PyObject *point = Py_BuildValue("(dd)", result[r][p].X * 1. / (1l << 32), result[r][p].Y * 1. / (1l << 32));
+			PyObject *point = Py_BuildValue("(dd)", result[r][p].X * 1. / (1ll << 32), result[r][p].Y * 1. / (1ll << 32));
 			PyTuple_SetItem(path, p, point);
 		}
 		PyTuple_SetItem(ret, r, path);
