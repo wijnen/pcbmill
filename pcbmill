@@ -319,6 +319,7 @@ def excellon(f): # {{{
 	assert ln == 'FMAT,2\n'
 	assert f.readline() == 'METRIC,TZ\n'
 	tools = {}
+	output = {}
 	milltool = -1
 	while True:
 		ln = f.readline()
@@ -329,13 +330,14 @@ def excellon(f): # {{{
 		t = int(m.group(1))
 		assert t not in tools
 		tools[t] = float(m.group(2))
+		output[tools[t]] = ([], [])
 		if abs(tools[t] - config['millsize']) < config['epsilon']:
 			milltool = t
 			config['millsize'] = tools[t]
 	if milltool == -1:
 		tools[milltool] = config['millsize']
+		output[tools[milltool]] = ([], [])
 	assert f.readline() == 'G90\n'
-	output = {tools[milltool]: ([], [])}
 	tool = None
 	for ln in f:
 		if ln in ('G05\n', 'M71\n'):
@@ -348,8 +350,6 @@ def excellon(f): # {{{
 		m = re.match('X(-?[0-9.]+)Y(-?[0-9.]+)(?:G85X(-?[0-9.]+)Y(-?[0-9.]+))?\n', ln)
 		assert m is not None
 		assert tool is not None
-		if tools[tool] not in output:
-			output[tools[tool]] = ([], [])
 		if m.group(3) is None:
 			# Hole.
 			output[tools[tool]][0].append((float(m.group(1)), float(m.group(2))))
@@ -459,10 +459,9 @@ def readfile(file, read = True):	# {{{
 def change_bit(cut, diameter, message): # {{{
 	global last, cutting
 	if last is not None:
-		if diameter is not False and last == diameter and cutting == cut:
+		if diameter is not False and abs(last - diameter) < config['epsilon'] and cutting == cut:
 			# Nothing to do.
 			return
-		print('change', cut, diameter, cutting, last)
 		outputs[-1] += 'M5\n'
 	outputs[-1] += 'M6\nM0 ;MSG, %s\nM3\n' % message
 	last = diameter
@@ -561,20 +560,21 @@ def make_drills(file, mirror):	# {{{
 		if len(output[t][0]) == 0 and (not config['drill_only'] or len(output[t][1]) == 0):
 			continue
 		# Ignore changes from one tool to almost the same tool.
-		if t < config['millsize'] and (cutting or last is None or abs(t - last) > config['epsilon']):
-			change_bit(False, t, 'Please insert %.2f mm drill bit' % t)
-		elif t >= config['millsize'] and (not cutting or last is None or abs(t - last) > config['epsilon']):
-			change_bit(True, t, 'Please insert %.2f mm ** CUTOUT ** bit' % t)
 		for pos in output[t][0]:
 			if t > config['millsize']:
-				# This is not impossible, but it is unsupported.
-				assert not config['drill_only']
-				outputs[-1] += 'G0 Z%f X%f Y%f\n' % (config['safe'], mirror * pos[0], pos[1])
-				outputs[-1] += 'G1 Z%f F%f\n' % (config['cut'], config['cutspeed'] * 60)
-				outputs[-1] += 'G1 X%f\n' % (mirror * pos[0] + (t - config['millsize']) / 2)
-				outputs[-1] += 'G2 I%f\n' % (-mirror * (t - config['millsize']) / 2)
-				outputs[-1] += 'G0 Z%f\n' % config['safe']
+				if config['drill_only']:
+					# Drilling out big holes with a small drill is unsupported. TODO
+					change_bit(False, t, 'Please insert %.2f mm drill bit' % t)
+					outputs[-1] += 'G81 R%f Z%f F%f X%f Y%f\n' % (config['safe'], config['drill'], config['drillspeed'] * 60, mirror * pos[0], pos[1])
+				else:
+					change_bit(True, t, 'Please insert %.2f mm ** CUTOUT ** bit' % t)
+					outputs[-1] += 'G0 Z%f X%f Y%f\n' % (config['safe'], mirror * pos[0], pos[1])
+					outputs[-1] += 'G1 Z%f F%f\n' % (config['cut'], config['cutspeed'] * 60)
+					outputs[-1] += 'G1 X%f\n' % (mirror * pos[0] + (t - config['millsize']) / 2)
+					outputs[-1] += 'G2 I%f\n' % (-mirror * (t - config['millsize']) / 2)
+					outputs[-1] += 'G0 Z%f\n' % config['safe']
 			else:
+				change_bit(False, t, 'Please insert %.2f mm drill bit' % t)
 				outputs[-1] += 'G81 R%f Z%f F%f X%f Y%f\n' % (config['safe'], config['drill'], config['drillspeed'] * 60, mirror * pos[0], pos[1])
 		if config['drill_only']:
 			slots = []

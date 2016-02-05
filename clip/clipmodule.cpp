@@ -8,18 +8,22 @@ using namespace ClipperLib;
 #define get PySequence_GetItem
 #define check PySequence_Check
 
-static PyObject *clip_handle(PyObject *self, PyObject *args) {
-	PyObject *regions;
-	double offset;
-	if (!PyArg_ParseTuple(args, "Od", &regions, &offset))
-		return NULL;
+static void dump_paths(Paths const &paths) {
+	for (unsigned int i = 0; i < paths.size(); ++i) {
+		for (unsigned int p = 0; p < paths[i].size(); ++p) {
+			printf("%f\t%f\n", paths[i][p].X * 1. / (1ll << 32), paths[i][p].Y * 1. / (1ll << 32));
+		}
+		printf("\n");
+	}
+}
+
+static bool read_data(Paths &result, PyObject *regions) {
 	Size num_regions = len(regions);
-	Paths result;
 	for (Size r = 0; r < num_regions; ++r) {
 		PyObject *region = get(regions, r);
 		if (!check(region)) {
 			PyErr_SetString(PyExc_ValueError, "Regions must be sequences.");
-			return NULL;
+			return false;
 		}
 		Size numpoints = len(region);
 		Path path = Path(numpoints);
@@ -27,7 +31,7 @@ static PyObject *clip_handle(PyObject *self, PyObject *args) {
 			PyObject *point = get(region, p);
 			if (!check(point) || len(point) != 2) {
 				PyErr_SetString(PyExc_ValueError, "Points must be sequences of length 2.");
-				return NULL;
+				return false;
 			}
 			cInt coordinate[2];
 			for (int c = 0; c < 2; ++c) {
@@ -35,7 +39,7 @@ static PyObject *clip_handle(PyObject *self, PyObject *args) {
 				oc = get(point, c);
 				if (!PyNumber_Check(oc)) {
 					PyErr_SetString(PyExc_ValueError, "Point elements must be numbers.");
-					return NULL;
+					return false;
 				}
 				coordinate[c] = static_cast <cInt> (PyFloat_AsDouble(PyNumber_Float(oc)) * (1ll << 32));
 			}
@@ -47,7 +51,10 @@ static PyObject *clip_handle(PyObject *self, PyObject *args) {
 		clip.AddPath(path, ptClip, true);
 		clip.Execute(ctUnion, result, pftNonZero, pftNonZero);
 	}
-	// Offset.
+	return true;
+}
+
+static bool apply_offset(Paths &result, double offset) {
 	for (size_t r = 0; r < result.size(); ++r) {
 		ClipperOffset offsetter(2ll << 32, 1ll << 30);
 		offsetter.AddPath(result[r], jtRound, etClosedPolygon);
@@ -58,13 +65,27 @@ static PyObject *clip_handle(PyObject *self, PyObject *args) {
 		clip.AddPath(result[r], ptSubject, true);
 		clip.AddPaths(offset_result, ptClip, true);
 		Paths solution;
-		clip.Execute(ctUnion, solution, pftNonZero, pftNonZero);
+		clip.Execute(ctUnion, solution, pftEvenOdd, pftEvenOdd);
 		if (solution.size() != 1) {
 			PyErr_SetString(PyExc_ValueError, "Offset results in multiple paths; should not be possible. Please report as a bug.");
-			return NULL;
+			return false;
 		}
 		result[r] = solution[0];
 	}
+	return true;
+}
+
+static PyObject *clip_handle(PyObject *self, PyObject *args) {
+	PyObject *regions;
+	double offset;
+	if (!PyArg_ParseTuple(args, "Od", &regions, &offset))
+		return NULL;
+	Paths result;
+	if (!read_data(result, regions))
+		return NULL;
+	//Paths original = result;
+	if (!apply_offset(result, offset))
+		return NULL;
 	// Check zero intersections.
 	Paths check;
 	for (size_t r = 0; r < result.size(); ++r) {
@@ -72,12 +93,13 @@ static PyObject *clip_handle(PyObject *self, PyObject *args) {
 		Clipper clip;
 		clip.AddPaths(check, ptSubject, true);
 		clip.AddPath(result[r], ptClip, true);
-		clip.Execute(ctIntersection, intersection, pftNonZero, pftNonZero);
+		clip.Execute(ctIntersection, intersection, pftEvenOdd, pftEvenOdd);
 		if (intersection.size() > 0) {
+			dump_paths(intersection);
 			PyErr_SetString(PyExc_ValueError, "Offset causes regions to overlap.  Use a smaller offset or give the design more clearance.");
 			return NULL;
 		}
-		clip.Execute(ctUnion, check, pftNonZero, pftNonZero);
+		clip.Execute(ctUnion, check, pftEvenOdd, pftEvenOdd);
 	}
 	PyObject *ret = PyTuple_New(result.size());
 	for (size_t r = 0; r < result.size(); ++r) {
