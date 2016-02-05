@@ -1,5 +1,6 @@
 #include <Python.h>
 #include <polyclipping/clipper.hpp>
+#include <list>
 
 using namespace ClipperLib;
 
@@ -8,16 +9,35 @@ using namespace ClipperLib;
 #define get PySequence_GetItem
 #define check PySequence_Check
 
+typedef std::list <Paths> Board;
+
 static void dump_paths(Paths const &paths) {
-	for (unsigned int i = 0; i < paths.size(); ++i) {
-		for (unsigned int p = 0; p < paths[i].size(); ++p) {
+	for (size_t i = 0; i < paths.size(); ++i) {
+		for (size_t p = 0; p < paths[i].size(); ++p) {
 			printf("%f\t%f\n", paths[i][p].X * 1. / (1ll << 32), paths[i][p].Y * 1. / (1ll << 32));
 		}
 		printf("\n");
 	}
 }
 
-static bool read_data(Paths &result, PyObject *regions) {
+static void merge(Board &result, Paths paths) {
+	for (Board::iterator i = result.begin(); i != result.end(); ++i) {
+		Clipper clip;
+		clip.AddPaths(*i, ptSubject, true);
+		clip.AddPaths(paths, ptClip, true);
+		Paths p;
+		clip.Execute(ctIntersection, p, pftEvenOdd, pftEvenOdd);
+		if (p.size() == 0)
+			continue;
+		clip.Execute(ctUnion, p, pftEvenOdd, pftEvenOdd);
+		result.erase(i);
+		return merge(result, p);
+	}
+	result.push_back(paths);
+}
+
+static bool read_data(Board &result, PyObject *regions) {
+	(void)&dump_paths;
 	Size num_regions = len(regions);
 	for (Size r = 0; r < num_regions; ++r) {
 		PyObject *region = get(regions, r);
@@ -26,7 +46,8 @@ static bool read_data(Paths &result, PyObject *regions) {
 			return false;
 		}
 		Size numpoints = len(region);
-		Path path = Path(numpoints);
+		Paths path(1);
+		path[0] = Path(numpoints);
 		for (Size p = 0; p < numpoints; ++p) {
 			PyObject *point = get(region, p);
 			if (!check(point) || len(point) != 2) {
@@ -43,36 +64,64 @@ static bool read_data(Paths &result, PyObject *regions) {
 				}
 				coordinate[c] = static_cast <cInt> (PyFloat_AsDouble(PyNumber_Float(oc)) * (1ll << 32));
 			}
-			path[p].X = coordinate[0];
-			path[p].Y = coordinate[1];
+			path[0][p].X = coordinate[0];
+			path[0][p].Y = coordinate[1];
 		}
-		Clipper clip;
-		clip.AddPaths(result, ptSubject, true);
-		clip.AddPath(path, ptClip, true);
-		clip.Execute(ctUnion, result, pftNonZero, pftNonZero);
+		merge(result, path);
 	}
 	return true;
 }
 
-static bool apply_offset(Paths &result, double offset) {
-	for (size_t r = 0; r < result.size(); ++r) {
+static void apply_offset(Board &result, double offset) {
+	for (Board::iterator i = result.begin(); i != result.end(); ++i) {
 		ClipperOffset offsetter(2ll << 32, 1ll << 30);
-		offsetter.AddPath(result[r], jtRound, etClosedPolygon);
+		offsetter.AddPaths(*i, jtRound, etClosedPolygon);
 		Paths offset_result;
 		// Multiply offset by 2, because half of it is inside the shape.
 		offsetter.Execute(offset_result, offset * (2ll << 32));
 		Clipper clip;
-		clip.AddPath(result[r], ptSubject, true);
+		clip.AddPaths(*i, ptSubject, true);
 		clip.AddPaths(offset_result, ptClip, true);
 		Paths solution;
-		clip.Execute(ctUnion, solution, pftEvenOdd, pftEvenOdd);
-		if (solution.size() != 1) {
-			PyErr_SetString(PyExc_ValueError, "Offset results in multiple paths; should not be possible. Please report as a bug.");
+		clip.Execute(ctUnion, *i, pftEvenOdd, pftEvenOdd);
+	}
+}
+
+static bool try_offset(Board &paths, double offset) {
+	apply_offset(paths, offset);
+	// Check zero intersections.
+	Paths check;
+	for (Board::iterator i = paths.begin(); i != paths.end(); ++i) {
+		Paths intersection;
+		Clipper clip;
+		clip.AddPaths(check, ptSubject, true);
+		clip.AddPaths(*i, ptClip, true);
+		clip.Execute(ctIntersection, intersection, pftEvenOdd, pftEvenOdd);
+		if (intersection.size() > 0)
 			return false;
-		}
-		result[r] = solution[0];
+		clip.Execute(ctUnion, check, pftEvenOdd, pftEvenOdd);
 	}
 	return true;
+}
+
+static PyObject *make_output(Board &result) {
+	size_t total_num_paths = 0;
+	for (Board::iterator i = result.begin(); i != result.end(); ++i)
+		total_num_paths += i->size();
+	PyObject *ret = PyTuple_New(total_num_paths);
+	size_t base = 0;
+	for (Board::iterator i = result.begin(); i != result.end(); ++i) {
+		for (size_t r = 0; r < i->size(); ++r) {
+			PyObject *path = PyTuple_New((*i)[r].size());
+			for (size_t p = 0; p < (*i)[r].size(); ++p) {
+				PyObject *point = Py_BuildValue("(dd)", (*i)[r][p].X * 1. / (1ll << 32), (*i)[r][p].Y * 1. / (1ll << 32));
+				PyTuple_SetItem(path, p, point);
+			}
+			PyTuple_SetItem(ret, base + r, path);
+		}
+		base += i->size();
+	}
+	return ret;
 }
 
 static PyObject *clip_handle(PyObject *self, PyObject *args) {
@@ -80,37 +129,26 @@ static PyObject *clip_handle(PyObject *self, PyObject *args) {
 	double offset;
 	if (!PyArg_ParseTuple(args, "Od", &regions, &offset))
 		return NULL;
-	Paths result;
+	Board result;
 	if (!read_data(result, regions))
 		return NULL;
-	//Paths original = result;
-	if (!apply_offset(result, offset))
-		return NULL;
-	// Check zero intersections.
-	Paths check;
-	for (size_t r = 0; r < result.size(); ++r) {
-		Paths intersection;
-		Clipper clip;
-		clip.AddPaths(check, ptSubject, true);
-		clip.AddPath(result[r], ptClip, true);
-		clip.Execute(ctIntersection, intersection, pftEvenOdd, pftEvenOdd);
-		if (intersection.size() > 0) {
-			dump_paths(intersection);
-			PyErr_SetString(PyExc_ValueError, "Offset causes regions to overlap.  Use a smaller offset or give the design more clearance.");
-			return NULL;
+	Board original = result;
+	if (!try_offset(result, offset)) {
+		// Binary search.
+		double h = offset;
+		double l = 0;
+		double epsilon = 1e-5;
+		while (h - l > epsilon) {
+			offset = (h + l) / 2;
+			printf("binary search offset: %f\n", offset);
+			result = original;
+			if (try_offset(result, offset))
+				l = offset;
+			else
+				h = offset;
 		}
-		clip.Execute(ctUnion, check, pftEvenOdd, pftEvenOdd);
 	}
-	PyObject *ret = PyTuple_New(result.size());
-	for (size_t r = 0; r < result.size(); ++r) {
-		PyObject *path = PyTuple_New(result[r].size());
-		for (size_t p = 0; p < result[r].size(); ++p) {
-			PyObject *point = Py_BuildValue("(dd)", result[r][p].X * 1. / (1ll << 32), result[r][p].Y * 1. / (1ll << 32));
-			PyTuple_SetItem(path, p, point);
-		}
-		PyTuple_SetItem(ret, r, path);
-	}
-	return ret;
+	return make_output(result);
 }
 
 static PyMethodDef ClipMethods[] = {
