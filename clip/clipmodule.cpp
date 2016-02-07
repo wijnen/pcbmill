@@ -11,6 +11,8 @@ using namespace ClipperLib;
 
 typedef std::list <Paths> Board;
 
+static bool debug = false;
+
 static void dump_paths(Paths const &paths) {
 	for (size_t i = 0; i < paths.size(); ++i) {
 		for (size_t p = 0; p < paths[i].size(); ++p) {
@@ -37,7 +39,6 @@ static void merge(Board &result, Paths paths) {
 }
 
 static bool read_data(Board &result, PyObject *regions) {
-	(void)&dump_paths;
 	Size num_regions = len(regions);
 	for (Size r = 0; r < num_regions; ++r) {
 		PyObject *region = get(regions, r);
@@ -97,8 +98,11 @@ static bool try_offset(Board &paths, double offset) {
 		clip.AddPaths(check, ptSubject, true);
 		clip.AddPaths(*i, ptClip, true);
 		clip.Execute(ctIntersection, intersection, pftEvenOdd, pftEvenOdd);
-		if (intersection.size() > 0)
+		if (intersection.size() > 0) {
+			if (debug)
+				dump_paths(intersection);
 			return false;
+		}
 		clip.Execute(ctUnion, check, pftEvenOdd, pftEvenOdd);
 	}
 	return true;
@@ -129,9 +133,17 @@ static PyObject *clip_handle(PyObject *self, PyObject *args) {
 	double offset;
 	if (!PyArg_ParseTuple(args, "Od", &regions, &offset))
 		return NULL;
+	if (offset < 0) {
+		debug = true;
+		offset = -offset;
+	}
 	Board result;
 	if (!read_data(result, regions))
 		return NULL;
+	if (debug) {
+		for (Board::iterator i = result.begin(); i != result.end(); ++i)
+			dump_paths(*i);
+	}
 	Board original = result;
 	if (!try_offset(result, offset)) {
 		// Binary search.

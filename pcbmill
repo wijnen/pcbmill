@@ -495,8 +495,8 @@ def make_traces(file, mirror):	# {{{
 			else:
 				for c in stamps[s]:
 					diff = (s[1][0] - s[1][1]) / 2
-					regions.append(circle(mirror * c[0] - diff, c[1], s[1][0]))
-					regions.append(circle(mirror * c[0] + diff, c[1], s[1][0]))
+					regions.append(circle(mirror * c[0] - diff, c[1], s[1][1]))
+					regions.append(circle(mirror * c[0] + diff, c[1], s[1][1]))
 					regions.append(rect(mirror * c[0] - diff, c[1] - s[1][1] / 2, mirror * c[0] + diff, c[1] + s[1][1] / 2))
 		elif s[0] == 'R':
 			for c in stamps[s]:

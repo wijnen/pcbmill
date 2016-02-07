@@ -99,7 +99,9 @@ and excellon files.
 	number of segments for this polygon.  Default: 100
 * `--offset`:
 	Offset of milling path from the trace edge.  This should be half of the
-	path that is milled out with the router.  Default: .1
+	path that is milled out with the router.  If set to a negative value,
+	the absolute value will be used, but debugging output will be sent to
+	standard output.  Default: .1
 
 ## AUTHOR
 Pcbmill was written by `Bas Wijnen <wijnen@debian.org>`
