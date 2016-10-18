@@ -29,6 +29,7 @@ config = fhs.init({ # {{{
 	'base': '',
 	'fn': 100,
 	'offset': .1,
+	'overlap': 1.,
 	})
 
 # Useful orders:
@@ -536,6 +537,19 @@ def make_traces(file, mirror):	# {{{
 				p = pos
 			# Close the path.
 			outputs[-1] += 'G1 X%f Y%f\n' % (r[0][0], r[0][1])
+			# Generate the overlap.
+			todo = config['overlap']
+			for pos in r[1:]:
+				dx = pos[0] - p[0]
+				dy = pos[1] - p[1]
+				dist = (dx ** 2 + dy ** 2) ** .5
+				if dist >= todo:
+					fraction = todo / dist
+					pos = (p[0] + dx * fraction, p[1] + dy * fraction)
+					outputs[-1] += 'G1 X%f Y%f\n' % (pos[0], pos[1])
+					break
+				outputs[-1] += 'G1 X%f Y%f\n' % (pos[0], pos[1])
+				todo -= dist
 # }}}
 
 def make_align(file, mirror):	# {{{
