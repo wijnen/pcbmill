@@ -1,3 +1,5 @@
+// vim: set foldmethod=marker :
+// Header. {{{
 #include <Python.h>
 #include <polyclipping/clipper.hpp>
 #include <list>
@@ -12,17 +14,19 @@ using namespace ClipperLib;
 typedef std::list <Paths> Board;
 
 static bool debug = false;
+// }}}
 
-static void dump_paths(Paths const &paths) {
+static void dump_paths(Paths const &paths) { // {{{
 	for (size_t i = 0; i < paths.size(); ++i) {
 		for (size_t p = 0; p < paths[i].size(); ++p) {
 			printf("%f\t%f\n", paths[i][p].X * 1. / (1ll << 32), paths[i][p].Y * 1. / (1ll << 32));
 		}
 		printf("\n");
 	}
-}
+} // }}}
 
-static void merge(Board &result, Paths paths) {
+// Use clipper library to merge two paths.
+static void merge(Board &result, Paths paths) { // {{{
 	for (Board::iterator i = result.begin(); i != result.end(); ++i) {
 		Clipper clip;
 		clip.AddPaths(*i, ptSubject, true);
@@ -36,10 +40,12 @@ static void merge(Board &result, Paths paths) {
 		return merge(result, p);
 	}
 	result.push_back(paths);
-}
+} // }}}
 
-static bool read_data(Board &result, PyObject *regions) {
+// Read the Python data and merge all the regions into one Paths object.
+static bool read_data(Board &result, PyObject *regions) { // {{{
 	Size num_regions = len(regions);
+	Paths path(num_regions);
 	for (Size r = 0; r < num_regions; ++r) {
 		PyObject *region = get(regions, r);
 		if (!check(region)) {
@@ -47,8 +53,7 @@ static bool read_data(Board &result, PyObject *regions) {
 			return false;
 		}
 		Size numpoints = len(region);
-		Paths path(1);
-		path[0] = Path(numpoints);
+		path[r] = Path(numpoints);
 		for (Size p = 0; p < numpoints; ++p) {
 			PyObject *point = get(region, p);
 			if (!check(point) || len(point) != 2) {
@@ -65,15 +70,20 @@ static bool read_data(Board &result, PyObject *regions) {
 				}
 				coordinate[c] = static_cast <cInt> (PyFloat_AsDouble(PyNumber_Float(oc)) * (1ll << 32));
 			}
-			path[0][p].X = coordinate[0];
-			path[0][p].Y = coordinate[1];
+			path[r][p].X = coordinate[0];
+			path[r][p].Y = coordinate[1];
 		}
-		merge(result, path);
 	}
+	Clipper clip;
+	clip.AddPaths(path, ptSubject, true);
+	Paths p;
+	clip.Execute(ctUnion, p, pftNonZero, pftNonZero);
+	result.push_back(p);
 	return true;
-}
+} // }}}
 
-static void apply_offset(Board &result, double offset) {
+// Apply offset to the board.
+static void apply_offset(Board &result, double offset) { // {{{
 	for (Board::iterator i = result.begin(); i != result.end(); ++i) {
 		ClipperOffset offsetter(2ll << 32, 1ll << 30);
 		offsetter.AddPaths(*i, jtRound, etClosedPolygon);
@@ -86,9 +96,10 @@ static void apply_offset(Board &result, double offset) {
 		Paths solution;
 		clip.Execute(ctUnion, *i, pftEvenOdd, pftEvenOdd);
 	}
-}
+} // }}}
 
-static bool try_offset(Board &paths, double offset) {
+// Check if requested offset is valid.
+static bool try_offset(Board &paths, double offset) { // {{{
 	apply_offset(paths, offset);
 	// Check zero intersections.
 	Paths check;
@@ -106,9 +117,10 @@ static bool try_offset(Board &paths, double offset) {
 		clip.Execute(ctUnion, check, pftEvenOdd, pftEvenOdd);
 	}
 	return true;
-}
+} // }}}
 
-static PyObject *make_output(Board &result) {
+// Generate Python objects to return.
+static PyObject *make_output(Board &result) { // {{{
 	size_t total_num_paths = 0;
 	for (Board::iterator i = result.begin(); i != result.end(); ++i)
 		total_num_paths += i->size();
@@ -126,9 +138,10 @@ static PyObject *make_output(Board &result) {
 		base += i->size();
 	}
 	return ret;
-}
+} // }}}
 
-static PyObject *clip_handle(PyObject *self, PyObject *args) {
+// Function that is called from Python.
+static PyObject *clip_handle(PyObject *self, PyObject *args) { // {{{
 	PyObject *regions;
 	double offset;
 	if (!PyArg_ParseTuple(args, "Od", &regions, &offset))
@@ -161,21 +174,23 @@ static PyObject *clip_handle(PyObject *self, PyObject *args) {
 		}
 	}
 	return make_output(result);
-}
+} // }}}
 
-static PyMethodDef ClipMethods[] = {
+// Registration machinery. {{{
+static PyMethodDef ClipMethods[] = { // {{{
 	{"handle", clip_handle, METH_VARARGS, "Make union and offset polygons."},
 	{NULL, NULL, 0, NULL}
-};
+}; // }}}
 
-static PyModuleDef clipmodule = {
+static PyModuleDef clipmodule = { // {{{
 	PyModuleDef_HEAD_INIT,
 	"clip",
 	NULL,
 	-1,
 	ClipMethods
-};
+}; // }}}
 
-PyMODINIT_FUNC PyInit_clip() {
+PyMODINIT_FUNC PyInit_clip() { // {{{
 	return PyModule_Create(&clipmodule);
-}
+} // }}}
+// }}}
