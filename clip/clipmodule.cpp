@@ -3,6 +3,7 @@
 #include <Python.h>
 #include <polyclipping/clipper.hpp>
 #include <list>
+#include <stdio.h>
 
 using namespace ClipperLib;
 
@@ -16,10 +17,10 @@ typedef std::list <Paths> Board;
 static bool debug = false;
 // }}}
 
-static void dump_paths(Paths const &paths) { // {{{
+static void dump_paths(Paths const &paths, int code) { // {{{
 	for (size_t i = 0; i < paths.size(); ++i) {
 		for (size_t p = 0; p < paths[i].size(); ++p) {
-			printf("%f\t%f\n", paths[i][p].X * 1. / (1ll << 32), paths[i][p].Y * 1. / (1ll << 32));
+			printf("%f\t%f\t%d\t%ld\n", paths[i][p].X * 1. / (1ll << 32), paths[i][p].Y * 1. / (1ll << 32), code, i);
 		}
 		printf("\n");
 	}
@@ -45,15 +46,16 @@ static void merge(Board &result, Paths paths) { // {{{
 // Read the Python data and merge all the regions into one Paths object.
 static bool read_data(Board &result, PyObject *regions) { // {{{
 	Size num_regions = len(regions);
-	Paths path(num_regions);
 	for (Size r = 0; r < num_regions; ++r) {
+		fprintf(stderr, "Handling region %ld/%ld\r", r + 1, num_regions);
 		PyObject *region = get(regions, r);
 		if (!check(region)) {
 			PyErr_SetString(PyExc_ValueError, "Regions must be sequences.");
 			return false;
 		}
 		Size numpoints = len(region);
-		path[r] = Path(numpoints);
+		Paths path(1);
+		path[0] = Path(numpoints);
 		for (Size p = 0; p < numpoints; ++p) {
 			PyObject *point = get(region, p);
 			if (!check(point) || len(point) != 2) {
@@ -70,15 +72,11 @@ static bool read_data(Board &result, PyObject *regions) { // {{{
 				}
 				coordinate[c] = static_cast <cInt> (PyFloat_AsDouble(PyNumber_Float(oc)) * (1ll << 32));
 			}
-			path[r][p].X = coordinate[0];
-			path[r][p].Y = coordinate[1];
+			path[0][p].X = coordinate[0];
+			path[0][p].Y = coordinate[1];
 		}
+		merge(result, path);
 	}
-	Clipper clip;
-	clip.AddPaths(path, ptSubject, true);
-	Paths p;
-	clip.Execute(ctUnion, p, pftNonZero, pftNonZero);
-	result.push_back(p);
 	return true;
 } // }}}
 
@@ -103,7 +101,8 @@ static bool try_offset(Board &paths, double offset) { // {{{
 	apply_offset(paths, offset);
 	// Check zero intersections.
 	Paths check;
-	for (Board::iterator i = paths.begin(); i != paths.end(); ++i) {
+	int t = 0;
+	for (Board::iterator i = paths.begin(); i != paths.end(); ++i, ++t) {
 		Paths intersection;
 		Clipper clip;
 		clip.AddPaths(check, ptSubject, true);
@@ -111,7 +110,7 @@ static bool try_offset(Board &paths, double offset) { // {{{
 		clip.Execute(ctIntersection, intersection, pftEvenOdd, pftEvenOdd);
 		if (intersection.size() > 0) {
 			if (debug)
-				dump_paths(intersection);
+				dump_paths(intersection, t);
 			return false;
 		}
 		clip.Execute(ctUnion, check, pftEvenOdd, pftEvenOdd);
@@ -154,8 +153,11 @@ static PyObject *clip_handle(PyObject *self, PyObject *args) { // {{{
 	if (!read_data(result, regions))
 		return NULL;
 	if (debug) {
-		for (Board::iterator i = result.begin(); i != result.end(); ++i)
-			dump_paths(*i);
+		printf("initial paths\n");
+		int t = 0;
+		for (Board::iterator i = result.begin(); i != result.end(); ++i, ++t)
+			dump_paths(*i, t);
+		printf("initial paths done\n");
 	}
 	Board original = result;
 	if (!try_offset(result, offset)) {
