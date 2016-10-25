@@ -30,6 +30,7 @@ config = fhs.init({ # {{{
 	'fn': 100,
 	'offset': .1,
 	'overlap': 1.,
+	'G81': True,
 	})
 
 # Useful orders:
@@ -415,6 +416,17 @@ def mill2drill(size, p0, p1, center = None, clockwise = None, mirror = False): #
 	return ret
 # }}}
 
+def G81(X, Y):
+	if config['G81']:
+		return 'G81 R%f Z%f F%f X%f Y%f\n' % (config['safe'], config['drill'], config['drillspeed'] * 60, X, Y)
+	else:
+		return '''\
+G0 Z%f
+G0 X%f Y%f
+G1 Z%f F%f
+G0 Z%f
+''' % (config['safe'], X, Y, config['drill'], config['drillspeed'] * 60, config['safe'])
+
 def drill_paths(tool, paths, mirror): # {{{
 	back = []
 	for path in paths:
@@ -423,16 +435,16 @@ def drill_paths(tool, paths, mirror): # {{{
 			if len(c) == 2:
 				first, second = mill2drill(tool, p, c, mirror = mirror < 0)
 				for d in first:
-					outputs[-1] += 'G81 R%f Z%f F%f X%f Y%f\n' % (config['safe'], config['drill'], config['drillspeed'] * 60, d[0], d[1])
+					outputs[-1] += G81(d[0], d[1])
 				back = second + back
 			else:
 				first, second = mill2drill(tool, p, c[:2], (p[0] + c[2], p[1] + c[3]), c[4] == 2, mirror = mirror)
 				for d in first:
-					outputs[-1] += 'G81 R%f Z%f F%f X%f Y%f\n' % (config['safe'], config['drill'], config['drillspeed'] * 60, d[0], d[1])
+					outputs[-1] += G81(d[0], d[1])
 				back = second + back
 			p = c[:2]
 	for d in back:
-		outputs[-1] += 'G81 R%f Z%f F%f X%f Y%f\n' % (config['safe'], config['drill'], config['drillspeed'] * 60, d[0], d[1])
+		outputs[-1] += G81(d[0], d[1])
 	# }}}
 
 def readfile(file, read = True):	# {{{
@@ -562,7 +574,7 @@ def make_align(file, mirror):	# {{{
 	for tool in cuts:
 		for path in cuts[tool]:
 			for pos in path:
-				outputs[-1] += 'G81 R%f Z%f F%f X%f Y%f\n' % (config['safe'], config['drill'], config['drillspeed'] * 60, mirror * pos[0], pos[1])
+				outputs[-1] += G81(mirror * pos[0], pos[1])
 # }}}
 
 def make_drills(file, mirror):	# {{{
@@ -580,7 +592,7 @@ def make_drills(file, mirror):	# {{{
 				if config['drill_only']:
 					# Drilling out big holes with a small drill is unsupported. TODO
 					change_bit(False, t, 'Please insert %.2f mm drill bit' % t)
-					outputs[-1] += 'G81 R%f Z%f F%f X%f Y%f\n' % (config['safe'], config['drill'], config['drillspeed'] * 60, mirror * pos[0], pos[1])
+					outputs[-1] += G81(mirror * pos[0], pos[1])
 				else:
 					change_bit(True, t, 'Please insert %.2f mm ** CUTOUT ** bit' % t)
 					outputs[-1] += 'G0 Z%f X%f Y%f\n' % (config['safe'], mirror * pos[0], pos[1])
@@ -590,7 +602,7 @@ def make_drills(file, mirror):	# {{{
 					outputs[-1] += 'G0 Z%f\n' % config['safe']
 			else:
 				change_bit(False, t, 'Please insert %.2f mm drill bit' % t)
-				outputs[-1] += 'G81 R%f Z%f F%f X%f Y%f\n' % (config['safe'], config['drill'], config['drillspeed'] * 60, mirror * pos[0], pos[1])
+				outputs[-1] += G81(mirror * pos[0], pos[1])
 		if config['drill_only']:
 			slots = []
 			for pos in output[t][1]:
