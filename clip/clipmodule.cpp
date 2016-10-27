@@ -44,7 +44,34 @@ static void merge(Board &result, Paths paths) { // {{{
 } // }}}
 
 // Read the Python data and merge all the regions into one Paths object.
-static bool read_data(Board &result, PyObject *regions) { // {{{
+static bool read_data(Board &result, PyObject *regions, PyObject *mask) { // {{{
+	// Read mask path, if any.
+	Paths maskpaths;
+	if (mask != Py_None) {
+		for (Size m = 0; m < len(mask); ++m) {
+			PyObject *region = get(mask, m);
+			maskpaths.push_back(Path(len(region)));
+			for (Size p = 0; p < len(region); ++p) {
+				PyObject *point = get(region, p);
+				if (!check(point) || len(point) != 2) {
+					PyErr_SetString(PyExc_ValueError, "Points must be sequences of length 2.");
+					return false;
+				}
+				cInt coordinate[2]; 
+				for (int c = 0; c < 2; ++c) {
+					PyObject *oc;
+					oc = get(point, c);
+					if (!PyNumber_Check(oc)) {
+						PyErr_SetString(PyExc_ValueError, "Point elements must be numbers.");
+						return false;
+					}
+					coordinate[c] = static_cast <cInt> (PyFloat_AsDouble(PyNumber_Float(oc)) * (1ll << 32));
+				}
+				maskpaths.back()[p].X = coordinate[0];
+				maskpaths.back()[p].Y = coordinate[1];
+			}
+		}
+	}
 	Size num_regions = len(regions);
 	for (Size r = 0; r < num_regions; ++r) {
 		fprintf(stderr, "Handling region %ld/%ld\r", r + 1, num_regions);
@@ -74,6 +101,16 @@ static bool read_data(Board &result, PyObject *regions) { // {{{
 			}
 			path[0][p].X = coordinate[0];
 			path[0][p].Y = coordinate[1];
+		}
+		Clipper clip;
+		clip.AddPath(path[0], ptSubject, true);
+		clip.AddPaths(maskpaths, ptClip, true);
+		Paths p;
+		clip.Execute(ctDifference, p, pftEvenOdd, pftEvenOdd);
+		if (p.size() != 0) {
+			if (debug)
+				printf("skipping path which has parts outside clipping mask");
+			continue;
 		}
 		merge(result, path);
 	}
@@ -143,14 +180,15 @@ static PyObject *make_output(Board &result) { // {{{
 static PyObject *clip_handle(PyObject *self, PyObject *args) { // {{{
 	PyObject *regions;
 	double offset;
-	if (!PyArg_ParseTuple(args, "Od", &regions, &offset))
+	PyObject *mask;
+	if (!PyArg_ParseTuple(args, "OdO", &regions, &offset, &mask))
 		return NULL;
 	if (offset < 0) {
 		debug = true;
 		offset = -offset;
 	}
 	Board result;
-	if (!read_data(result, regions))
+	if (!read_data(result, regions, mask))
 		return NULL;
 	if (debug) {
 		printf("initial paths\n");
