@@ -44,9 +44,8 @@ static void merge(Board &result, Paths paths) { // {{{
 } // }}}
 
 // Read the Python data and merge all the regions into one Paths object.
-static bool read_data(Board &result, PyObject *regions, PyObject *mask) { // {{{
+static bool read_data(Board &result, PyObject *regions, PyObject *mask, Paths &maskpaths) { // {{{
 	// Read mask path, if any.
-	Paths maskpaths;
 	if (mask != Py_None) {
 		for (Size m = 0; m < len(mask); ++m) {
 			PyObject *region = get(mask, m);
@@ -102,17 +101,22 @@ static bool read_data(Board &result, PyObject *regions, PyObject *mask) { // {{{
 			path[0][p].X = coordinate[0];
 			path[0][p].Y = coordinate[1];
 		}
-		Clipper clip;
-		clip.AddPath(path[0], ptSubject, true);
-		clip.AddPaths(maskpaths, ptClip, true);
-		Paths p;
-		clip.Execute(ctDifference, p, pftEvenOdd, pftEvenOdd);
-		if (p.size() != 0) {
-			if (debug)
-				printf("skipping path which has parts outside clipping mask");
-			continue;
-		}
 		merge(result, path);
+	}
+	for (Board::iterator i = result.begin(); i != result.end(); ++i) {
+		for (Paths::iterator k = i->begin(); k != i->end(); ++k) {
+			Clipper clip;
+			clip.AddPath(*k, ptSubject, true);
+			clip.AddPaths(maskpaths, ptClip, true);
+			Paths p;
+			clip.Execute(ctDifference, p, pftEvenOdd, pftEvenOdd);
+			if (p.size() != 0) {
+				if (debug)
+					printf("skipping path which has parts outside clipping mask");
+				k->clear();
+				continue;
+			}
+		}
 	}
 	return true;
 } // }}}
@@ -188,7 +192,8 @@ static PyObject *clip_handle(PyObject *self, PyObject *args) { // {{{
 		offset = -offset;
 	}
 	Board result;
-	if (!read_data(result, regions, mask))
+	Paths maskpaths;
+	if (!read_data(result, regions, mask, maskpaths))
 		return NULL;
 	if (debug) {
 		printf("initial paths\n");
