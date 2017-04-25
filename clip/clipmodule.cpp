@@ -103,18 +103,20 @@ static bool read_data(Board &result, PyObject *regions, PyObject *mask, Paths &m
 		}
 		merge(result, path);
 	}
-	for (Board::iterator i = result.begin(); i != result.end(); ++i) {
-		for (Paths::iterator k = i->begin(); k != i->end(); ++k) {
-			Clipper clip;
-			clip.AddPath(*k, ptSubject, true);
-			clip.AddPaths(maskpaths, ptClip, true);
-			Paths p;
-			clip.Execute(ctDifference, p, pftEvenOdd, pftEvenOdd);
-			if (p.size() != 0) {
-				if (debug)
-					printf("skipping path which has parts outside clipping mask");
-				k->clear();
-				continue;
+	if (maskpaths.size() > 0) {
+		for (Board::iterator i = result.begin(); i != result.end(); ++i) {
+			for (Paths::iterator k = i->begin(); k != i->end(); ++k) {
+				Clipper clip;
+				clip.AddPath(*k, ptSubject, true);
+				clip.AddPaths(maskpaths, ptClip, true);
+				Paths p;
+				clip.Execute(ctDifference, p, pftEvenOdd, pftEvenOdd);
+				if (p.size() != 0) {
+					if (debug)
+						printf("skipping path which has parts outside clipping mask");
+					k->clear();
+					continue;
+				}
 			}
 		}
 	}
