@@ -106,7 +106,7 @@ and excellon files.
 	Offset of milling path from the trace edge.  This should be half of the
 	path that is milled out with the router.  If set to a negative value,
 	the absolute value will be used, but debugging output will be sent to
-	standard output.  Default: .1
+	standard output.  Default: .2
 
 ## AUTHOR
 Pcbmill was written by `Bas Wijnen <wijnen@debian.org>`

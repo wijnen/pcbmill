@@ -29,7 +29,7 @@ config = fhs.init({ # {{{
 	'maskfile': '',		# Front filename; constructed from base if not specified.
 	'base': '',		# Base for all filenames; required if any of them are missing.
 	'fn': 100,		# Circles are approximated using polygons with this many points.
-	'offset': .1,		# Offset from mill paths.  Should be half the width of the mill.
+	'offset': .2,		# Offset from mill paths.  Should be half the width of the mill.
 	'overlap': 5.,		# Traces are extended this much to make sure the seam is cut out.
 	'G81': True,		# If False, G81 statements are replaced with G0+G1.
 	'change': 40.,		# Bit change depth.
