@@ -129,8 +129,7 @@ static void apply_offset(Board &result, double offset) { // {{{
 		ClipperOffset offsetter(2ll << 32, 1ll << 30);
 		offsetter.AddPaths(*i, jtRound, etClosedPolygon);
 		Paths offset_result;
-		// Multiply offset by 2, because half of it is inside the shape.
-		offsetter.Execute(offset_result, offset * (2ll << 32));
+		offsetter.Execute(offset_result, offset * (1ll << 32));
 		Clipper clip;
 		clip.AddPaths(*i, ptSubject, true);
 		clip.AddPaths(offset_result, ptClip, true);
