@@ -10,17 +10,17 @@ import clip
 
 config = fhs.init({ # {{{
 	'safe': 1.,		# Safe height.
-	'mill': -.05,		# Mill depth.
-	'drill': -2.,		# Drill depth.
+	'mill': -.1,		# Mill depth.
+	'drill': -4.,		# Drill depth.
 	'cut': -1.6,		# Cutout depth.
 	'drillspeed': 3.5,	# Drill speed (vertical).
-	'millspeed': 3.,	# Mill speed.
+	'millspeed': 10.,	# Mill speed.
 	'cutspeed': 2.,		# Cutout speed.
 	'millsize': 3.,		# Above this size, holes are milled instead of drilled.
 	'epsilon': .09,		# Bit sizes closer than this together are considered equal.
 	'drill_only': True,	# Use many drills instead of cutouts.
 	'order': 'd/B/fc',	# Order and operations to perform.
-	'output': 'out-',	# Output filename.
+	'output': '',		# Output filename; defaults to base, or 'out-' if not given.
 	'frontfile': '',	# Front filename; constructed from base if not specified.
 	'backfile': '',		# Back filename; constructed from base if not specified.
 	'drillfile': '',	# Drill filename; constructed from base if not specified.
@@ -34,6 +34,9 @@ config = fhs.init({ # {{{
 	'G81': True,		# If False, G81 statements are replaced with G0+G1.
 	'change': 40.,		# Bit change depth.
 	'change2': False,	# Wait at 0 after bit change?
+	'passes': 3,		# Number of passes to use.
+	'origin': 0.,		# Start making passes from this depth.
+	'ramp': 3.,		# Length of ramp to enter material or change depth.
 	})
 
 # Useful orders:
@@ -485,6 +488,10 @@ def change_bit(cut, diameter, message): # {{{
 			# Nothing to do.
 			return
 		outputs[-1] += 'M5\n'
+	if not config['change2']:
+		message += ' and prepare for reprobe.'
+	else:
+		message += '.'
 	outputs[-1] += 'G0 Z%f\nM6\nM0 ;MSG, %s\n' % (config['change'], message)
 	if config['change2']:
 		outputs[-1] += 'G0 Z0\nM0 ;MSG, Drop the bit to the surface.\nG0 Z%f\n' % config['safe']
@@ -560,31 +567,42 @@ def make_traces(file, mirror):	# {{{
 	regions = clip.handle(regions, config['offset'], mask)
 	# Create gcode from result.
 	if len(regions) > 0:
-		change_bit(True, False, 'Please insert router bit.')
+		def ramp(p, region, length, z0, z1): # {{{
+			done = 0
+			while True:
+				for i, pos in enumerate(r[1:] + r[0]):
+					dx = pos[0] - p[0]
+					dy = pos[1] - p[1]
+					dist = (dx ** 2 + dy ** 2) ** .5
+					if done + dist >= length:
+						fraction = (length - done) / dist
+						pos = (p[0] + dx * fraction, p[1] + dy * fraction)
+						outputs[-1] += 'G1 X%f Y%f Z%f\n' % (pos[0], pos[1], z1)
+						p[:] = pos
+						return i, fraction
+					outputs[-1] += 'G1 X%f Y%f Z%f\n' % (pos[0], pos[1], z0 + (z1 - z0) * done / length)
+					p[:] = pos
+					done += dist
+		# }}}
+		change_bit(True, False, 'Please insert router bit')
+		outputs[-1] += 'G1 F%f\n' % (config['millspeed'] * 60)
+		depths = [config['origin'] + (p + 1) / config['passes'] * (config['mill'] - config['origin']) for p in range(config['passes'])]
 		for r in regions:
-			p = r[0]
+			p = list(r[0])
 			outputs[-1] += 'G0 Z%f\n' % config['safe']
 			outputs[-1] += 'G0 X%f Y%f Z%f\n' % (p[0], p[1], config['safe'])
-			outputs[-1] += 'G1 Z%f F%f\n' % (config['mill'], config['millspeed'] * 60)
-			for pos in r[1:]:
-				outputs[-1] += 'G1 X%f Y%f\n' % (pos[0], pos[1])
-				p = pos
-			# Close the path.
-			outputs[-1] += 'G1 X%f Y%f\n' % (r[0][0], r[0][1])
-			# Generate the overlap.
-			todo = config['overlap']
-			for pos in r[1:]:
-				dx = pos[0] - p[0]
-				dy = pos[1] - p[1]
-				dist = (dx ** 2 + dy ** 2) ** .5
-				if dist >= todo:
-					fraction = todo / dist
-					pos = (p[0] + dx * fraction, p[1] + dy * fraction)
+			outputs[-1] += 'G0 Z%f\n' % config['origin']
+			last_depth = config['origin']
+			for depth in depths:
+				num, fraction = ramp(p, r, config['ramp'], last_depth, depth)
+				last_depth = depth
+				for pos in r[num + 1:]:
 					outputs[-1] += 'G1 X%f Y%f\n' % (pos[0], pos[1])
-					break
-				outputs[-1] += 'G1 X%f Y%f\n' % (pos[0], pos[1])
-				p = pos
-				todo -= dist
+					p[:] = pos
+				# Close the path.
+				outputs[-1] += 'G1 X%f Y%f\n' % (r[0][0], r[0][1])
+			# Generate the overlap.
+			ramp(p, r, config['overlap'], config['mill'], config['mill'])
 # }}}
 
 def make_align(file, mirror):	# {{{
@@ -592,7 +610,7 @@ def make_align(file, mirror):	# {{{
 	stamps, cuts, regions = gerber(readfile(file))
 	assert len(stamps) == 0
 	assert len(regions) == 0
-	change_bit(False, False, 'Please insert alignment drill bit.')
+	change_bit(False, False, 'Please insert alignment drill bit')
 	for tool in cuts:
 		for path in cuts[tool]:
 			for pos in path:
@@ -612,17 +630,17 @@ def make_drills(file, mirror):	# {{{
 			if t > config['millsize']:
 				if config['drill_only']:
 					# Drilling out big holes with a small drill is unsupported. TODO
-					change_bit(False, t, 'Please insert %.2f mm drill bit.' % t)
+					change_bit(False, t, 'Please insert %.2f mm drill bit' % t)
 					outputs[-1] += G81(mirror * pos[0], pos[1])
 				else:
-					change_bit(True, t, 'Please insert %.2f mm ** CUTOUT ** bit.' % t)
+					change_bit(True, t, 'Please insert %.2f mm ** CUTOUT ** bit' % t)
 					outputs[-1] += 'G0 Z%f X%f Y%f\n' % (config['safe'], mirror * pos[0], pos[1])
 					outputs[-1] += 'G1 Z%f F%f\n' % (config['cut'], config['cutspeed'] * 60)
 					outputs[-1] += 'G1 X%f\n' % (mirror * pos[0] + (t - config['millsize']) / 2)
 					outputs[-1] += 'G2 I%f\n' % (-mirror * (t - config['millsize']) / 2)
 					outputs[-1] += 'G0 Z%f\n' % config['safe']
 			else:
-				change_bit(False, t, 'Please insert %.2f mm drill bit.' % t)
+				change_bit(False, t, 'Please insert %.2f mm drill bit' % t)
 				outputs[-1] += G81(mirror * pos[0], pos[1])
 		if config['drill_only']:
 			slots = []
@@ -634,7 +652,7 @@ def make_drills(file, mirror):	# {{{
 			continue
 		# Ignore changes from one tool to almost the same tool.
 		if t >= config['millsize'] and (not cutting or last is None):
-			change_bit(True, config['millsize'], 'Please insert %.2f mm ** CUTOUT ** bit.')
+			change_bit(True, config['millsize'], 'Please insert %.2f mm ** CUTOUT ** bit')
 		for pos in output[t][1]:
 			outputs[-1] += 'G0 Z%f X%f Y%f\n' % (config['safe'], mirror * pos[0], pos[1])
 			outputs[-1] += 'G1 Z%f F%f\n' % (config['cut'], config['cutspeed'] * 60)
@@ -652,11 +670,11 @@ def make_cuts(file, mirror):	# {{{
 	for t in cuts:
 		if config['drill_only']:
 			if last != t or cutting:
-				change_bit(False, t, 'Please insert %.2f mm drill bit.' % t)
+				change_bit(False, t, 'Please insert %.2f mm drill bit' % t)
 			drill_paths(t, cuts[t], mirror)
 		else:
 			if last != t or not cutting:
-				change_bit(True, t, 'Please insert %.2f mm *** CUTOUT *** bit.' % t)
+				change_bit(True, t, 'Please insert %.2f mm *** CUTOUT *** bit' % t)
 			for path in cuts[t]:
 				outputs[-1] += 'G0 Z%f X%f Y%f\n' % (config['safe'], mirror * path[0][0], path[0][1])
 				outputs[-1] += 'G1 Z%f F%f\n' % (config['cut'], config['cutspeed'] * 60)
@@ -708,6 +726,8 @@ if last is not None:
 last = None
 # }}}
 
+name = (config['base'] or 'out') + '-'
+
 for i, o in enumerate(outputs):
-	with open('%s%d' % (config['output'], i) + os.extsep + 'gcode', 'w') as f:
+	with open(name + '%d' % i + os.extsep + 'gcode', 'w') as f:
 		f.write(o)
