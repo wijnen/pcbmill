@@ -32,11 +32,12 @@ config = fhs.init({ # {{{
 	'offset': .2,		# Offset from mill paths.  Should be half the width of the mill.
 	'overlap': 5.,		# Traces are extended this much to make sure the seam is cut out.
 	'G81': True,		# If False, G81 statements are replaced with G0+G1.
-	'change': 40.,		# Bit change depth.
-	'change2': False,	# Wait at 0 after bit change?
+	'change': 20.,		# Bit change depth.
+	'change2': False,	# Wait at Z=0 after bit change?
 	'passes': 3,		# Number of passes to use.
-	'origin': 0.,		# Start making passes from this depth.
+	'origin': .1,		# Start making passes from this depth.
 	'ramp': 3.,		# Length of ramp to enter material or change depth.
+	'spinup': 1.,		# Time to wait for the spindle to spin up, in seconds.
 	})
 
 # Useful orders:
@@ -496,6 +497,8 @@ def change_bit(cut, diameter, message): # {{{
 	if config['change2']:
 		outputs[-1] += 'G0 Z0\nM0 ;MSG, Drop the bit to the surface.\nG0 Z%f\n' % config['safe']
 	outputs[-1] += 'M3\n'
+	if config['spinup'] > 0:
+		outputs[-1] += 'G4 S%f\n' % config['spinup']
 	last = diameter
 	cutting = cut
 # }}}
