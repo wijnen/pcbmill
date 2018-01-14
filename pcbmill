@@ -518,33 +518,30 @@ def make_traces(file, mirror):	# {{{
 	def circle(x, y, d):
 		fn = config['fn']
 		return [[x + d / 2 * math.cos(i * 2 * math.pi / fn), y + d / 2 * math.sin(i * 2 * math.pi / fn)] for i in range(fn)] + [[x + d / 2, y]]
-	for r in regions:
-		for pos in r:
-			pos = (mirror * pos[0],) + pos[1:]
 	for s in stamps:
 		if s[0] == 'C':
 			for c in stamps[s]:
-				regions.append(circle(mirror * c[0], c[1], s[1][0]))
+				regions.append(circle(c[0], c[1], s[1][0]))
 		elif s[0] == 'O':
 			if s[1][0] < s[1][1]:
 				for c in stamps[s]:
 					diff = (s[1][1] - s[1][0]) / 2
-					regions.append(circle(mirror * c[0], c[1] - diff, s[1][0]))
-					regions.append(circle(mirror * c[0], c[1] + diff, s[1][0]))
-					regions.append(rect(mirror * c[0] - s[1][0] / 2, c[1] - diff, mirror * c[0] + s[1][0] / 2, c[1] + diff))
+					regions.append(circle(c[0], c[1] - diff, s[1][0]))
+					regions.append(circle(c[0], c[1] + diff, s[1][0]))
+					regions.append(rect(c[0] - s[1][0] / 2, c[1] - diff, c[0] + s[1][0] / 2, c[1] + diff))
 			elif s[1][0] > s[1][1]:
 				for c in stamps[s]:
 					diff = (s[1][0] - s[1][1]) / 2
-					regions.append(circle(mirror * c[0] - diff, c[1], s[1][1]))
-					regions.append(circle(mirror * c[0] + diff, c[1], s[1][1]))
-					regions.append(rect(mirror * c[0] - diff, c[1] - s[1][1] / 2, mirror * c[0] + diff, c[1] + s[1][1] / 2))
+					regions.append(circle(c[0] - diff, c[1], s[1][1]))
+					regions.append(circle(c[0] + diff, c[1], s[1][1]))
+					regions.append(rect(c[0] - diff, c[1] - s[1][1] / 2, c[0] + diff, c[1] + s[1][1] / 2))
 			else:
 				for c in stamps[s]:
-					regions.append(circle(mirror * c[0], c[1], s[1][1]))
-					regions.append(circle(mirror * c[0], c[1], s[1][1]))
+					regions.append(circle(c[0], c[1], s[1][1]))
+					regions.append(circle(c[0], c[1], s[1][1]))
 		elif s[0] == 'R':
 			for c in stamps[s]:
-				regions.append(rect(mirror * c[0] - s[1][0] / 2, c[1] - s[1][1] / 2, mirror * c[0] + s[1][0] / 2, c[1] + s[1][1] / 2))
+				regions.append(rect(c[0] - s[1][0] / 2, c[1] - s[1][1] / 2, c[0] + s[1][0] / 2, c[1] + s[1][1] / 2))
 	for d in traces:
 		if len(traces[d]) == 0:
 			continue
@@ -552,38 +549,37 @@ def make_traces(file, mirror):	# {{{
 			if len(path) == 0:
 				continue
 			p = path[0]
-			regions.append(circle(mirror * p[0], p[1], d))
+			regions.append(circle(p[0], p[1], d))
 			for pos in path[1:]:
 				dist = sum((pos[t] - p[t]) ** 2 for t in range(2)) ** .5
 				if dist == 0:
 					continue
 				offset = [(pos[1] - p[1]) / dist * d / 2, -(pos[0] - p[0]) / dist * d / 2]
 				regions.append((
-					(mirror * (p[0] - offset[0]), p[1] - offset[1]),
-					(mirror * (pos[0] - offset[0]), pos[1] - offset[1]),
-					(mirror * (pos[0] + offset[0]), pos[1] + offset[1]),
-					(mirror * (p[0] + offset[0]), p[1] + offset[1])))
+					(p[0] - offset[0], p[1] - offset[1]),
+					(pos[0] - offset[0], pos[1] - offset[1]),
+					(pos[0] + offset[0], pos[1] + offset[1]),
+					(p[0] + offset[0], p[1] + offset[1])))
 				p = pos
-				regions.append(circle(mirror * p[0], p[1], d))
+				regions.append(circle(p[0], p[1], d))
 	# Merge and offset all regions, and check for resulting intersections.
-	print(repr(mask))
 	regions = clip.handle(regions, config['offset'], mask)
 	# Create gcode from result.
 	if len(regions) > 0:
 		def ramp(p, region, length, z0, z1): # {{{
 			done = 0
 			while True:
-				for i, pos in enumerate(r[1:] + r[0]):
+				for i, pos in enumerate(r[1:] + r[:1]):
 					dx = pos[0] - p[0]
 					dy = pos[1] - p[1]
 					dist = (dx ** 2 + dy ** 2) ** .5
 					if done + dist >= length:
 						fraction = (length - done) / dist
 						pos = (p[0] + dx * fraction, p[1] + dy * fraction)
-						outputs[-1] += 'G1 X%f Y%f Z%f\n' % (pos[0], pos[1], z1)
+						outputs[-1] += 'G1 X%f Y%f Z%f\n' % (mirror * pos[0], pos[1], z1)
 						p[:] = pos
 						return i, fraction
-					outputs[-1] += 'G1 X%f Y%f Z%f\n' % (pos[0], pos[1], z0 + (z1 - z0) * done / length)
+					outputs[-1] += 'G1 X%f Y%f Z%f\n' % (mirror * pos[0], pos[1], z0 + (z1 - z0) * done / length)
 					p[:] = pos
 					done += dist
 		# }}}
@@ -593,17 +589,17 @@ def make_traces(file, mirror):	# {{{
 		for r in regions:
 			p = list(r[0])
 			outputs[-1] += 'G0 Z%f\n' % config['safe']
-			outputs[-1] += 'G0 X%f Y%f Z%f\n' % (p[0], p[1], config['safe'])
+			outputs[-1] += 'G0 X%f Y%f Z%f\n' % (mirror * p[0], p[1], config['safe'])
 			outputs[-1] += 'G0 Z%f\n' % config['origin']
 			last_depth = config['origin']
 			for depth in depths:
 				num, fraction = ramp(p, r, config['ramp'], last_depth, depth)
 				last_depth = depth
 				for pos in r[num + 1:]:
-					outputs[-1] += 'G1 X%f Y%f\n' % (pos[0], pos[1])
+					outputs[-1] += 'G1 X%f Y%f\n' % (mirror * pos[0], pos[1])
 					p[:] = pos
 				# Close the path.
-				outputs[-1] += 'G1 X%f Y%f\n' % (r[0][0], r[0][1])
+				outputs[-1] += 'G1 X%f Y%f\n' % (mirror * r[0][0], r[0][1])
 			# Generate the overlap.
 			ramp(p, r, config['overlap'], config['mill'], config['mill'])
 # }}}
