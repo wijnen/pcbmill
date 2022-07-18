@@ -8,8 +8,7 @@ versions = $(shell py3versions -vr)
 override_dh_auto_build:
 	dh_auto_build
 	cd clip ; for version in $(versions) ; do python$$version setup.py build ; done
-	ronn -r pcbmill.1.ronn
 
 override_dh_auto_clean:
 	dh_auto_clean
-	rm -rf pcbmill.1 clip/build
+	rm -rf clip/build

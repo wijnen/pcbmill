@@ -2,7 +2,7 @@ Source: pcbmill
 Section: electronics
 Priority: optional
 Maintainer: Bas Wijnen <wijnen@debian.org>
-Build-Depends: debhelper (>= 9), dh-python, python3-all-dev, libpolyclipping-dev, ruby-ronn
+Build-Depends: debhelper (>= 10), dh-python, python3-all-dev, libpolyclipping-dev
 Standards-Version: 3.9.8
 
 Package: pcbmill

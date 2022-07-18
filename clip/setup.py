@@ -1,7 +1,7 @@
 from distutils.core import setup, Extension
 
 clipmodule = Extension('clip',
-		sources = ['clipmodule.cpp'],
+		sources = ['src/clip/clipmodule.cpp'],
 		libraries = ['polyclipping'])
 
 setup(name = 'clip',

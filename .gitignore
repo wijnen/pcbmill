@@ -1,0 +1,8 @@
+/clip.cpython-
+/clip/build/
+/clip/dist/
+/debian/debhelper-build-stamp
+/debian/pcbmill.debhelper.log
+/pcbmill.1
+/clip.cpython-310-x86_64-linux-gnu.so
+/clip/clip.egg-info/
